@@ -1,9 +1,13 @@
 package kvsrv
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
 
+	"github.com/google/uuid"
+
+	"6.5840/labrpc"
+)
 
 type Clerk struct {
 	server *labrpc.ClientEnd
@@ -37,7 +41,13 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	args := &GetArgs{
+		Key: key,
+	}
+	reply := &GetReply{}
+	for !ck.server.Call("KVServer.Get", args, reply) {
+	}
+	return reply.Value
 }
 
 // shared by Put and Append.
@@ -50,7 +60,26 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
-	return ""
+	id := uuid.New()
+	arg := &PutAppendArgs{
+		Key:       key,
+		Value:     value,
+		RequestID: id.ID(),
+		Mode:      Mode_Modify,
+	}
+	reply := &PutAppendReply{}
+	for !ck.server.Call("KVServer."+op, arg, reply) {
+	}
+	ret := reply.Value
+
+	req := &PutAppendArgs{
+		RequestID: id.ID(),
+		Mode:      Mode_Report,
+	}
+	rsp := &PutAppendReply{}
+	for !ck.server.Call("KVServer."+op, req, rsp) {
+	}
+	return ret
 }
 
 func (ck *Clerk) Put(key string, value string) {
