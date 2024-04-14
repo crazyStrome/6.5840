@@ -34,14 +34,12 @@ func (rf *Raft) commitLog(idx int) {
 		}
 		var prevIdx int
 		var prevTerm int64
-		rf.mu.Lock()
-		entries := rf.log[nextIdx:lastIdx]
-		if nextIdx > 0 && len(rf.log) >= nextIdx {
-			prevEntry := rf.log[nextIdx-1]
-			prevIdx = prevEntry.Index
-			prevTerm = prevEntry.Term
+		prevEntries := rf.getEntries(nextIdx-1, nextIdx)
+		if len(prevEntries) != 0 {
+			prevIdx = prevEntries[0].Index
+			prevTerm = prevEntries[0].Term
 		}
-		rf.mu.Unlock()
+		entries := rf.getEntries(nextIdx, lastIdx+1)
 		args := &AppendEntriesArgs{
 			Term:         rf.getCurrentTerm(),
 			LeaderID:     rf.me,
@@ -63,11 +61,15 @@ func (rf *Raft) commitLog(idx int) {
 			break
 		}
 		if reply.Success {
-			rf.nextIndex[idx]++
-			rf.matchIndex[idx] = nextIdx
+			rf.nextIndex[idx] += len(entries)
+			rf.matchIndex[idx] = prevIdx + len(entries)
 			rf.updateLeaderCommitIndex()
+			rf.Logf("[commitLog] append to Raft:%v success, idx:%v, len:%v\n",
+				idx, nextIdx, len(entries))
 		} else {
 			rf.nextIndex[idx]--
+			rf.Logf("[commitLog] append to Raft:%v fail, idx:%v, len:%v\n",
+				idx, nextIdx, len(entries))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -79,17 +81,17 @@ func (rf *Raft) applyLog() {
 		commitIndex := atomic.LoadInt64(&rf.commitIndex)
 		lastApplied := atomic.LoadInt64(&rf.lastApplied)
 		if lastApplied < commitIndex {
-			rf.mu.Lock()
-			entry := rf.log[lastApplied]
-			rf.mu.Unlock()
-			rf.applyCh <- ApplyMsg{
-				CommandValid: true,
-				Command:      entry.Command,
-				CommandIndex: int(lastApplied + 1),
+			entries := rf.getEntries(int(lastApplied+1), int(commitIndex+1))
+			for _, entry := range entries {
+				rf.applyCh <- ApplyMsg{
+					CommandValid: true,
+					Command:      entry.Command,
+					CommandIndex: entry.Index,
+				}
 			}
-			atomic.AddInt64(&rf.lastApplied, 1)
-			rf.Logf("[applyLog] done with idx:%v, entry:%+v\n",
-				lastApplied+1, entry)
+			atomic.AddInt64(&rf.lastApplied, int64(len(entries)))
+			rf.Logf("[applyLog] done with idx:%v, entry len:%+v\n",
+				lastApplied+1, len(entries))
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -97,11 +99,17 @@ func (rf *Raft) applyLog() {
 
 // getEntries 返回 [start: end] 索引的数据，索引是条目索引，从 1 开始
 func (rf *Raft) getEntries(start, end int) []Entry {
+	if start <= 0 {
+		return nil
+	}
 	if end <= start {
 		return nil
 	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if start > len(rf.log) {
+		return nil
+	}
 	return rf.log[start-1 : end-1]
 }
 
