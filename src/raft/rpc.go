@@ -25,8 +25,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	curTerm := rf.getCurrentTerm()
 	reply.Term = curTerm
-	if curTerm > args.Term {
-		rf.Logf("[RequestVote] see low term:%v of Raft:%v, don't granted\n",
+	if curTerm >= args.Term {
+		rf.Logf("[RequestVote] see low term:%v of Raft:%v, don't vote\n",
 			args.Term, args.CandidateID)
 		return
 	}
@@ -47,7 +47,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		args.LastLogTerm, args.Term)
 	reply.VoteGranted = true
 
-	rf.setTerm(args.Term)
+	rf.turnFollower(args.Term)
 	rf.setVoteInfo(args.CandidateID, args.Term)
 	rf.leaderID = -1
 }
@@ -92,9 +92,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	// 收到 leader 的信息，就更新数据
-	rf.turnFollower()
+	rf.turnFollower(args.Term)
 	rf.leaderID = args.LeaderID
-	rf.setTerm(args.Term)
+
+	if !rf.matchLog(args.PrevLogIndex, args.PrevLogTerm) {
+		rf.Logf("[AppendEntries] log don't match with leader:%v, args.PrevLogIndex:%v, args.PrevLogIndex:%v, is heartBeat:%v\n",
+			args.LeaderID, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries) == 0)
+		return
+	}
+
+	// 只有日志匹配之后，才更新 commitIndex
 	rf.updateCommitIndex(args.LeaderCommit)
 
 	if len(args.Entries) == 0 {
@@ -102,10 +109,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 		return
 	}
-	if !rf.matchLog(args.PrevLogIndex, args.PrevLogTerm) {
-		rf.Logf("[AppendEntries] log don't match with:%v\n", args.LeaderID)
-		return
-	}
+
+	rf.mu.Lock()
+	rf.log = rf.log[:args.PrevLogIndex]
+	rf.log = append(rf.log, args.Entries...)
+	rf.mu.Unlock()
+	reply.Success = true
+	rf.Logf("[AppendEntries] add entry to log at args.PrevLogIndex:%v, args.PrevLogTerm:%v, leader:%v, entry len:%v\n",
+		args.PrevLogIndex, args.PrevLogTerm, args.LeaderID, len(args.Entries))
 }
 
 func (rf *Raft) updateCommitIndex(commitIndex int64) {
@@ -114,7 +125,9 @@ func (rf *Raft) updateCommitIndex(commitIndex int64) {
 		return
 	}
 	lastIdx, _ := rf.getLastLogIndexAndTerm()
-	atomic.StoreInt64(&rf.commitIndex, min(commitIndex, int64(lastIdx)))
+	afterIdx := min(commitIndex, int64(lastIdx))
+	atomic.StoreInt64(&rf.commitIndex, afterIdx)
+	rf.Logf("[updateCommitIndex] from:%v to %v\n", curIdx, afterIdx)
 }
 
 func (rf *Raft) getLastLogIndexAndTerm() (int, int64) {
@@ -134,10 +147,10 @@ func (rf *Raft) matchLog(prevIdx int, prevTerm int64) bool {
 	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if prevIdx >= len(rf.log) {
+	if prevIdx > len(rf.log) {
 		return false
 	}
-	return rf.log[prevIdx].Term == prevTerm
+	return rf.log[prevIdx-1].Term == prevTerm
 }
 
 func (rf *Raft) setVoteInfo(server int, term int64) {

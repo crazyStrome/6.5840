@@ -132,13 +132,26 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
+	if rf.getCurrentState() != StateLeader {
+		return -1, -1, false
+	}
+	lastIdx, _ := rf.getLastLogIndexAndTerm()
+	curTerm := rf.getCurrentTerm()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.log = append(rf.log, Entry{
+		Index:   lastIdx + 1,
+		Term:    curTerm,
+		Command: command,
+	})
 
-	return index, term, isLeader
+	rf.nextIndex[rf.me] = lastIdx + 2
+	rf.matchIndex[rf.me] = lastIdx + 1
+
+	rf.Logf("[Start] append log:%+v at index:%v\n", command, lastIdx+1)
+
+	return lastIdx + 1, int(curTerm), true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -204,12 +217,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.resetElectionTimer()
+	rf.applyCh = applyCh
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go rf.applyLog()
 
 	return rf
 }

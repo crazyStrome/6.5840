@@ -30,8 +30,9 @@ type ApplyMsg struct {
 }
 
 type Entry struct {
-	Index int
-	Term  int64
+	Index   int
+	Term    int64
+	Command interface{}
 }
 
 // A Go object implementing a single Raft peer.
@@ -66,8 +67,9 @@ type Raft struct {
 	leaderID int // -1 表示没有 leaderID
 
 	// volatile state on leaders
-	nextIndex  []int // 每个 server 一个 index，标识要发给他们的下一个条目的索引。一开始是 leader 的最后一个日志条目索引 + 1
-	matchIndex []int // 每个 server 一个，已复制到 server 上的最高索引，初始时是 0
+	nextIndex  []int         // 每个 server 一个 index，标识要发给他们的下一个条目的索引。一开始是 leader 的最后一个日志条目索引 + 1
+	matchIndex []int         // 每个 server 一个，已复制到 server 上的最高索引，初始时是 0
+	applyCh    chan ApplyMsg // 应用日志的 channel
 }
 
 func (rf *Raft) Logf(line string, args ...interface{}) {
@@ -86,10 +88,11 @@ func (rf *Raft) getCurrentState() int32 {
 	return atomic.LoadInt32(&rf.currentState)
 }
 
-// turnFollower 转为 follower
-func (rf *Raft) turnFollower() {
+// turnFollower 转为新 term 的 follower
+func (rf *Raft) turnFollower(term int64) {
 	atomic.StoreInt32(&rf.currentState, StateFollower)
 	rf.resetElectionTimer()
+	atomic.StoreInt64(&rf.currentTerm, term)
 }
 
 func (rf *Raft) turnCandidator() {

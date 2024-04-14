@@ -58,8 +58,7 @@ func (rf *Raft) election() {
 		}
 		if reply.Term > rf.getCurrentTerm() {
 			rf.Logf("[election] see hight term:%v of other, turn follower\n", reply.Term)
-			rf.turnFollower()
-			rf.setTerm(reply.Term)
+			rf.turnFollower(reply.Term)
 			break
 		}
 		if reply.VoteGranted {
@@ -69,6 +68,7 @@ func (rf *Raft) election() {
 			rf.Logf("[election] become leader")
 			rf.turnLeader()
 			go rf.heartBeat()
+			go rf.commitLogs()
 			break
 		}
 	}

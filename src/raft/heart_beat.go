@@ -9,9 +9,9 @@ import (
 // 心跳间隔为 100ms
 func (rf *Raft) heartBeat() {
 	rf.Logf("[heartBeat] start heartBeat\n")
-	for rf.getCurrentState() == StateLeader {
+	for !rf.killed() && rf.getCurrentState() == StateLeader {
 		rf.sendHeartBeats()
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	rf.Logf("[heartBeat] stop heartBeat\n")
 }
@@ -19,6 +19,7 @@ func (rf *Raft) heartBeat() {
 func (rf *Raft) sendHeartBeats() {
 	curTerm := rf.getCurrentTerm()
 	commitIndex := atomic.LoadInt64(&rf.commitIndex)
+	prevIdx, prevTerm := rf.getLastLogIndexAndTerm()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -27,8 +28,8 @@ func (rf *Raft) sendHeartBeats() {
 		req := &AppendEntriesArgs{
 			Term:         curTerm,
 			LeaderID:     rf.me,
-			PrevLogIndex: 0, // 心跳不需要进行判断
-			PrevLogTerm:  0, // 心跳不需要判断
+			PrevLogIndex: prevIdx,
+			PrevLogTerm:  prevTerm,
 			Entries:      []Entry{},
 			LeaderCommit: commitIndex,
 		}
@@ -36,13 +37,12 @@ func (rf *Raft) sendHeartBeats() {
 		go func() {
 			ok := rf.sendHeartBeat(idx, req, rsp)
 			if !ok {
-				rf.Logf("[heartBeat] send heart beat to Raft:%v net fail\n", idx)
+				//rf.Logf("[heartBeat] send heart beat to Raft:%v net fail\n", idx)
 				return
 			}
 			if rsp.Term > rf.getCurrentTerm() {
 				rf.Logf("[heartBeat] see high term:%v of Raft:%v, turn to follower\n", rsp.Term, idx)
-				rf.setTerm(rsp.Term)
-				rf.turnFollower()
+				rf.turnFollower(rsp.Term)
 			}
 		}()
 	}
