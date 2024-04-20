@@ -13,6 +13,7 @@ func (rf *Raft) election() {
 	rf.incrTerm()
 	// 给自己投票
 	rf.setVoteInfo(rf.me, rf.getCurrentTerm())
+	rf.persist()
 	rf.Logf("[election] start election and vote for self\n")
 
 	// 重设选举计时器
@@ -59,6 +60,7 @@ func (rf *Raft) election() {
 		if reply.Term > rf.getCurrentTerm() {
 			rf.Logf("[election] see hight term:%v of other, turn follower\n", reply.Term)
 			rf.turnFollower(reply.Term)
+			rf.persist()
 			break
 		}
 		if reply.VoteGranted {
