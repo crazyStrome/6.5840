@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"sort"
 	"sync/atomic"
 	"time"
 )
@@ -117,15 +118,21 @@ func (rf *Raft) updateLeaderCommitIndex() {
 	if rf.getCurrentState() != StateLeader {
 		return
 	}
-	matchIndexs := make(map[int]int)
+	matchIndexs := make([]int64, 0, len(rf.peers))
 	for _, idx := range rf.matchIndex {
-		matchIndexs[idx]++
+		matchIndexs = append(matchIndexs, int64(idx))
 	}
-	var commitIndex int
-	for idx, cnt := range matchIndexs {
-		if cnt*2 > len(rf.peers) && commitIndex < idx {
-			commitIndex = idx
-		}
-	}
+	commitIndex := getMaxMajority(matchIndexs)
+
 	atomic.StoreInt64(&rf.commitIndex, int64(commitIndex))
+}
+
+func getMaxMajority(matchIndexs []int64) int64 {
+	if len(matchIndexs) == 0 {
+		return 0
+	}
+	sort.Slice(matchIndexs, func(i, j int) bool {
+		return matchIndexs[i] < matchIndexs[j]
+	})
+	return matchIndexs[len(matchIndexs)/2]
 }
