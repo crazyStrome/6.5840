@@ -43,7 +43,17 @@ func (rf *Raft) sendHeartBeats() {
 			if rsp.Term > rf.getCurrentTerm() {
 				rf.Logf("[heartBeat] see high term:%v of Raft:%v, turn to follower\n", rsp.Term, idx)
 				rf.turnFollower(rsp.Term)
+				rf.persist()
+				return
 			}
+			if rsp.Success {
+				return
+			}
+			x := rsp.XData
+			nIndex := rf.getNextIndex(prevIdx, x)
+			rf.nextIndex[idx] = nIndex
+			rf.Logf("[sendHeartBeat] to Raft:%v log diff, idx:%v, xData:%+v, nextIndex:%v\n",
+				idx, prevIdx, x, nIndex)
 		}()
 	}
 }

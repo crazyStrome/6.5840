@@ -35,6 +35,23 @@ type Entry struct {
 	Command interface{}
 }
 
+func (e Entry) clone() Entry {
+	return Entry{
+		Index:   e.Index,
+		Term:    e.Term,
+		Command: e.Command,
+	}
+}
+
+type PersistState struct {
+	CurrentTerm int64
+	VoteInfo    struct {
+		VotedFor  int64
+		VotedTerm int64
+	}
+	Log []Entry
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -76,6 +93,16 @@ func (rf *Raft) Logf(line string, args ...interface{}) {
 	DPrintf("[Raft:%v, term:%v] "+line, append([]interface{}{rf.me, rf.getCurrentTerm()}, args...)...)
 }
 
+func (rf *Raft) cloneLog() []Entry {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	entries := make([]Entry, 0, len(rf.log))
+	for _, entry := range rf.log {
+		entries = append(entries, entry.clone())
+	}
+	return entries
+}
+
 func (rf *Raft) getCurrentTerm() int64 {
 	return atomic.LoadInt64(&rf.currentTerm)
 }
@@ -107,6 +134,13 @@ func (rf *Raft) turnLeader() {
 		return
 	}
 	atomic.StoreInt32(&rf.currentState, StateLeader)
+	// 初始化 nextIndex 和 matchIndex
+	lastIdx, _ := rf.getLastLogIndexAndTerm()
+	rf.nextIndex = make([]int, len(rf.peers))
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = lastIdx + 1
+	}
+	rf.matchIndex = make([]int, len(rf.peers))
 }
 
 func (rf *Raft) resetElectionTimer() {

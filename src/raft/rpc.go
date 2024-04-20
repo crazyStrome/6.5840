@@ -30,6 +30,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			args.Term, args.CandidateID)
 		return
 	}
+	rf.turnFollower(args.Term)
+	rf.persist()
 	votedFor, votedTerm := rf.getVoteInfo()
 	if votedTerm == args.Term && votedFor != -1 && votedFor != int64(args.CandidateID) {
 		rf.Logf("[RequestVote] has vote for Raft:%v for term:%v\n",
@@ -47,8 +49,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		args.LastLogTerm, args.Term)
 	reply.VoteGranted = true
 
-	rf.turnFollower(args.Term)
 	rf.setVoteInfo(args.CandidateID, args.Term)
+	rf.persist()
 	rf.leaderID = -1
 }
 
@@ -79,9 +81,17 @@ type AppendEntriesArgs struct {
 	LeaderCommit int64   // leader 提交的索引
 }
 
+type XData struct {
+	XTerm  int64 // 冲突条目对应的任期
+	XIndex int   // 冲突任期对应的第一个条目索引
+	XLen   int   // 日志长度
+}
+
 type AppendEntriesReply struct {
 	Term    int64 // 下游的任期
 	Success bool  // 如果 follower 包含符合 prevLogIndex 和 prevLogTerm 的日志
+
+	XData XData
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -93,30 +103,62 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// 收到 leader 的信息，就更新数据
 	rf.turnFollower(args.Term)
+	rf.persist()
 	rf.leaderID = args.LeaderID
 
 	if !rf.matchLog(args.PrevLogIndex, args.PrevLogTerm) {
-		rf.Logf("[AppendEntries] log don't match with leader:%v, args.PrevLogIndex:%v, args.PrevLogIndex:%v, is heartBeat:%v\n",
-			args.LeaderID, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries) == 0)
+		reply.XData = rf.getXData(args.PrevLogIndex)
+		rf.Logf("[AppendEntries] log don't match with leader:%v, args.PrevLogIndex:%v, args.PrevLogIndex:%v, is heartBeat:%v, XData:%+v\n",
+			args.LeaderID, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries) == 0, reply.XData)
 		return
 	}
 
-	// 只有日志匹配之后，才更新 commitIndex
-	rf.updateCommitIndex(args.LeaderCommit)
+	//rf.mu.Lock()
+	//rf.log = rf.log[:args.PrevLogIndex]
+	//rf.mu.Unlock()
 
-	if len(args.Entries) == 0 {
-		// 表明是心跳消息
-		reply.Success = true
-		return
-	}
+	//rf.persist()
+
+	//if len(args.Entries) == 0 {
+	//	// 表明是心跳消息
+	//	// 只有日志匹配之后，才更新 commitIndex
+	//	rf.updateCommitIndex(args.LeaderCommit)
+	//	reply.Success = true
+	//	return
+	//}
 
 	rf.mu.Lock()
 	rf.log = rf.log[:args.PrevLogIndex]
 	rf.log = append(rf.log, args.Entries...)
 	rf.mu.Unlock()
+	rf.Logf("[AppendEntries] entries:%+v", rf.cloneLog())
+
+	rf.persist()
+
 	reply.Success = true
+	// 只有日志匹配之后，才更新 commitIndex
+	rf.updateCommitIndex(args.LeaderCommit)
 	rf.Logf("[AppendEntries] add entry to log at args.PrevLogIndex:%v, args.PrevLogTerm:%v, leader:%v, entry len:%v\n",
 		args.PrevLogIndex, args.PrevLogTerm, args.LeaderID, len(args.Entries))
+}
+
+func (rf *Raft) getXData(leaderIdx int) XData {
+	x := XData{}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	x.XLen = len(rf.log)
+	if leaderIdx > len(rf.log) {
+		return x
+	}
+	term := rf.log[leaderIdx-1].Term
+	x.XTerm = term
+	for i := leaderIdx - 1; i >= 0; i-- {
+		if rf.log[i].Term != term {
+			break
+		}
+		x.XIndex = rf.log[i].Index
+	}
+	return x
 }
 
 func (rf *Raft) updateCommitIndex(commitIndex int64) {
