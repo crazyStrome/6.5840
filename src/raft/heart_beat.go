@@ -19,19 +19,12 @@ func (rf *Raft) heartBeat() {
 func (rf *Raft) sendHeartBeats() {
 	curTerm := rf.getCurrentTerm()
 	commitIndex := atomic.LoadInt64(&rf.commitIndex)
+	prevIdx, prevTerm := rf.getLastLogIndexAndTerm()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
 		idx := i
-		nextIdx := rf.nextIndex[idx]
-		var prevIdx int
-		var prevTerm int64
-		prevEntries := rf.getEntries(nextIdx-1, nextIdx)
-		if len(prevEntries) != 0 {
-			prevIdx = prevEntries[0].Index
-			prevTerm = prevEntries[0].Term
-		}
 		req := &AppendEntriesArgs{
 			Term:         curTerm,
 			LeaderID:     rf.me,
@@ -56,23 +49,11 @@ func (rf *Raft) sendHeartBeats() {
 			if rsp.Success {
 				return
 			}
-			nIndex := nextIdx - 1
 			x := rsp.XData
-			xTermEntries := rf.getEntriesForTerm(x.XTerm)
-			if len(xTermEntries) == 0 {
-				nIndex = x.XIndex
-			} else {
-				nIndex = xTermEntries[len(xTermEntries)-1].Index
-			}
-			if prevIdx > x.XLen {
-				nIndex = x.XLen
-			}
-			if nIndex == 0 {
-				nIndex = 1
-			}
+			nIndex := rf.getNextIndex(prevIdx, x)
 			rf.nextIndex[idx] = nIndex
 			rf.Logf("[sendHeartBeat] to Raft:%v log diff, idx:%v, xData:%+v, nextIndex:%v\n",
-				idx, nextIdx, x, nIndex)
+				idx, prevIdx, x, nIndex)
 		}()
 	}
 }

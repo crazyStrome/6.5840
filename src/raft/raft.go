@@ -134,9 +134,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.getCurrentState() != StateLeader {
 		return -1, -1, false
 	}
-	lastIdx, _ := rf.getLastLogIndexAndTerm()
 	curTerm := rf.getCurrentTerm()
 	rf.mu.Lock()
+	lastIdx := len(rf.log)
 	rf.log = append(rf.log, Entry{
 		Index:   lastIdx + 1,
 		Term:    curTerm,

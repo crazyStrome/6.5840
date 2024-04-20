@@ -64,26 +64,31 @@ func (rf *Raft) commitLog(idx int) {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
-		nIndex := nextIdx - 1
 		x := reply.XData
-		xTermEntries := rf.getEntriesForTerm(x.XTerm)
-		if len(xTermEntries) == 0 {
-			nIndex = x.XIndex
-		} else {
-			nIndex = xTermEntries[len(xTermEntries)-1].Index
-		}
-		if prevIdx > x.XLen {
-			nIndex = x.XLen
-		}
-		if nIndex == 0 {
-			nIndex = 1
-		}
+		nIndex := rf.getNextIndex(prevIdx, x)
 		rf.nextIndex[idx] = nIndex
 		rf.Logf("[commitLog] append to Raft:%v fail, idx:%v, len:%v, xData:%+v, nextIdx:%v\n",
 			idx, nextIdx, len(entries), x, nIndex)
 		time.Sleep(5 * time.Millisecond)
 	}
 	rf.Logf("[commitLog] stop to Raft:%v\n", idx)
+}
+
+func (rf *Raft) getNextIndex(prevIdx int, x XData) int {
+	xTermEntries := rf.getEntriesForTerm(x.XTerm)
+	var nIndex int
+	if len(xTermEntries) == 0 {
+		nIndex = x.XIndex
+	} else {
+		nIndex = xTermEntries[len(xTermEntries)-1].Index
+	}
+	if prevIdx > x.XLen {
+		nIndex = x.XLen
+	}
+	if nIndex == 0 {
+		nIndex = 1
+	}
+	return nIndex
 }
 
 func (rf *Raft) getEntriesForTerm(term int64) []Entry {
@@ -120,7 +125,7 @@ func (rf *Raft) applyLog() {
 	}
 }
 
-// getEntries 返回 [start: end] 索引的数据，索引是条目索引，从 1 开始
+// getEntries 返回 [start: end) 索引的数据，索引是条目索引，从 1 开始
 func (rf *Raft) getEntries(start, end int) []Entry {
 	if start <= 0 {
 		return nil

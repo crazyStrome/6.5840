@@ -50,6 +50,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = true
 
 	rf.setVoteInfo(args.CandidateID, args.Term)
+	rf.persist()
 	rf.leaderID = -1
 }
 
@@ -112,25 +113,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	//rf.mu.Lock()
+	//rf.log = rf.log[:args.PrevLogIndex]
+	//rf.mu.Unlock()
+
+	//rf.persist()
+
+	//if len(args.Entries) == 0 {
+	//	// 表明是心跳消息
+	//	// 只有日志匹配之后，才更新 commitIndex
+	//	rf.updateCommitIndex(args.LeaderCommit)
+	//	reply.Success = true
+	//	return
+	//}
+
 	rf.mu.Lock()
 	rf.log = rf.log[:args.PrevLogIndex]
-	rf.mu.Unlock()
-	rf.persist()
-
-	if len(args.Entries) == 0 {
-		// 表明是心跳消息
-		// 只有日志匹配之后，才更新 commitIndex
-		rf.updateCommitIndex(args.LeaderCommit)
-		reply.Success = true
-		return
-	}
-
-	rf.mu.Lock()
 	rf.log = append(rf.log, args.Entries...)
 	rf.mu.Unlock()
-	rf.persist()
-	reply.Success = true
 	rf.Logf("[AppendEntries] entries:%+v", rf.cloneLog())
+
+	rf.persist()
+
+	reply.Success = true
 	// 只有日志匹配之后，才更新 commitIndex
 	rf.updateCommitIndex(args.LeaderCommit)
 	rf.Logf("[AppendEntries] add entry to log at args.PrevLogIndex:%v, args.PrevLogTerm:%v, leader:%v, entry len:%v\n",
