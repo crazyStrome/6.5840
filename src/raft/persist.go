@@ -8,10 +8,22 @@ func (rf *Raft) getPersistState() PersistState {
 	return state
 }
 
+func (rf *Raft) getSnapshot() *Snapshot {
+	rf.mu.Lock()
+	rf.mu.Unlock()
+	return rf.snapshot
+}
+
 func (rf *Raft) recoverFromState(state PersistState) {
 	rf.setTerm(state.CurrentTerm)
 	rf.setVoteInfo(int(state.VoteInfo.VotedFor), state.VoteInfo.VotedTerm)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.log = state.Log
+}
+
+func (rf *Raft) recoverFromSnapshot(snapshot *Snapshot) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.snapshot = snapshot
 }

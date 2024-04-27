@@ -35,6 +35,12 @@ type Entry struct {
 	Command interface{}
 }
 
+type Snapshot struct {
+	LastIncludedIndex int    // 快照包含的最后一条索引
+	LastIncludedTerm  int64  // 快照包含的最后一条记录的任期
+	Snapshot          []byte // 快照数据
+}
+
 func (e Entry) clone() Entry {
 	return Entry{
 		Index:   e.Index,
@@ -70,7 +76,8 @@ type Raft struct {
 		votedFor  int64 // 投票给的人，-1 表示未投票
 		votedTerm int64 // 投票给 votedFor 的时候，votedFor 的任期
 	}
-	log []Entry // 日志条目
+	log      []Entry   // 日志条目
+	snapshot *Snapshot // 快照
 
 	// volatile state on all servers
 	commitIndex int64 // 已知被提交的最高条目索引

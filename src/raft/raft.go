@@ -56,7 +56,17 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.getPersistState())
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+
+	sw := new(bytes.Buffer)
+	snapshot := rf.getSnapshot()
+	var raftSnaptshot []byte
+	if snapshot != nil {
+		se := labgob.NewEncoder(sw)
+		se.Encode(snapshot)
+		raftSnaptshot = sw.Bytes()
+	}
+
+	rf.persister.Save(raftstate, raftSnaptshot)
 }
 
 // restore previously persisted state.
@@ -76,13 +86,49 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
+// restore previously persisted state.
+func (rf *Raft) readSnapshot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	// Your code here (2C).
+	// Example:
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	snapshot := &Snapshot{}
+	if err := d.Decode(snapshot); err != nil {
+		rf.Logf("[readPersist] err:%v", err)
+	} else {
+		rf.recoverFromSnapshot(snapshot)
+	}
+}
+
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	var lastIncludedTerm int64
+	entries := make([]Entry, 0, len(rf.log))
+	for _, entry := range rf.log {
+		if entry.Index < index {
+			continue
+		}
+		if entry.Index == index {
+			lastIncludedTerm = entry.Term
+			continue
+		}
+		entries = append(entries, entry.clone())
+	}
+	rf.log = entries
+	rf.snapshot = &Snapshot{
+		LastIncludedIndex: index,
+		LastIncludedTerm:  lastIncludedTerm,
+		Snapshot:          clone(snapshot),
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -136,7 +182,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	curTerm := rf.getCurrentTerm()
 	rf.mu.Lock()
-	lastIdx := len(rf.log)
+	var lastIdx int
+	if rf.snapshot != nil {
+		lastIdx = rf.snapshot.LastIncludedIndex
+	}
+	if len(rf.log) != 0 {
+		lastIdx = rf.log[len(rf.log)-1].Index
+	}
 	rf.log = append(rf.log, Entry{
 		Index:   lastIdx + 1,
 		Term:    curTerm,

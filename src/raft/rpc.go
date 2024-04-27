@@ -176,6 +176,9 @@ func (rf *Raft) getLastLogIndexAndTerm() (int, int64) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if len(rf.log) == 0 {
+		if rf.snapshot != nil {
+			return rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm
+		}
 		return 0, 0
 	}
 	entry := rf.log[len(rf.log)-1]
@@ -189,10 +192,13 @@ func (rf *Raft) matchLog(prevIdx int, prevTerm int64) bool {
 	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if prevIdx > len(rf.log) {
-		return false
+	for _, entry := range rf.log {
+		if entry.Index != prevIdx {
+			continue
+		}
+		return entry.Term == prevTerm
 	}
-	return rf.log[prevIdx-1].Term == prevTerm
+	return false
 }
 
 func (rf *Raft) setVoteInfo(server int, term int64) {
