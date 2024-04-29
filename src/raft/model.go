@@ -55,7 +55,11 @@ type PersistState struct {
 		VotedFor  int64
 		VotedTerm int64
 	}
-	Log []Entry
+	Log      []Entry
+	Snapshot struct {
+		LastIncludedTerm  int64
+		LastIncludedIndex int
+	}
 }
 
 // A Go object implementing a single Raft peer.
@@ -76,8 +80,9 @@ type Raft struct {
 		votedFor  int64 // 投票给的人，-1 表示未投票
 		votedTerm int64 // 投票给 votedFor 的时候，votedFor 的任期
 	}
-	log      []Entry   // 日志条目
-	snapshot *Snapshot // 快照
+	log           []Entry   // 日志条目
+	snapshot      *Snapshot // 快照
+	snapshotCache map[int]*Snapshot
 
 	// volatile state on all servers
 	commitIndex int64 // 已知被提交的最高条目索引

@@ -57,13 +57,10 @@ func (rf *Raft) persist() {
 	e.Encode(rf.getPersistState())
 	raftstate := w.Bytes()
 
-	sw := new(bytes.Buffer)
 	snapshot := rf.getSnapshot()
 	var raftSnaptshot []byte
 	if snapshot != nil {
-		se := labgob.NewEncoder(sw)
-		se.Encode(snapshot)
-		raftSnaptshot = sw.Bytes()
+		raftSnaptshot = snapshot.Snapshot
 	}
 
 	rf.persister.Save(raftstate, raftSnaptshot)
@@ -93,14 +90,7 @@ func (rf *Raft) readSnapshot(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	r := bytes.NewBuffer(data)
-	d := labgob.NewDecoder(r)
-	snapshot := &Snapshot{}
-	if err := d.Decode(snapshot); err != nil {
-		rf.Logf("[readPersist] err:%v", err)
-	} else {
-		rf.recoverFromSnapshot(snapshot)
-	}
+	rf.recoverFromSnapshot(data)
 }
 
 // the service says it has created a snapshot that has
@@ -109,8 +99,21 @@ func (rf *Raft) readSnapshot(data []byte) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+	rf.Logf("[Snapshot] index:%v, len:%v\n", index, len(snapshot))
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+
+	rf.setSnapshotWithoutLock(index, snapshot)
+	rf.mu.Unlock()
+
+	rf.persist()
+}
+
+func (rf *Raft) setSnapshotWithoutLock(index int, snapshot []byte) {
+	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= index {
+		rf.Logf("[setSnapshotWithoutLock] already has idx:%v, bigger than:%v\n",
+			rf.snapshot.LastIncludedIndex, index)
+		return
+	}
 	var lastIncludedTerm int64
 	entries := make([]Entry, 0, len(rf.log))
 	for _, entry := range rf.log {
@@ -124,6 +127,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		entries = append(entries, entry.clone())
 	}
 	rf.log = entries
+	rf.Logf("[setSnapshotWithoutLock] after snapshot, logs:%+v\n", entries)
 	rf.snapshot = &Snapshot{
 		LastIncludedIndex: index,
 		LastIncludedTerm:  lastIncludedTerm,
@@ -194,14 +198,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    curTerm,
 		Command: command,
 	})
-	rf.mu.Unlock()
-	rf.persist()
-	rf.Logf("[Start] entries:%+v", rf.cloneLog())
 
 	rf.nextIndex[rf.me] = lastIdx + 2
 	rf.matchIndex[rf.me] = lastIdx + 1
+	rf.mu.Unlock()
+
+	rf.persist()
 
 	rf.Logf("[Start] append log:%+v at index:%v\n", command, lastIdx+1)
+	rf.Logf("[Start] after entries:%+v", rf.cloneLog())
 
 	return lastIdx + 1, int(curTerm), true
 }
@@ -248,7 +253,7 @@ func (rf *Raft) isElectionTimeout() bool {
 }
 
 func getElectionTimeout() int64 {
-	return 1200 + (rand.Int63() % 300)
+	return 300 + (rand.Int63() % 300)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -266,6 +271,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.snapshotCache = map[int]*Snapshot{}
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.resetElectionTimer()
@@ -273,6 +279,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.readSnapshot(persister.ReadSnapshot())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()

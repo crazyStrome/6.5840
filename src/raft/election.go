@@ -55,13 +55,13 @@ func (rf *Raft) election() {
 	for i := 0; i < len(rf.peers)-1; i++ {
 		reply := <-msgCh
 		if rf.getCurrentState() != StateCandidator {
-			break
+			return
 		}
 		if reply.Term > rf.getCurrentTerm() {
 			rf.Logf("[election] see hight term:%v of other, turn follower\n", reply.Term)
 			rf.turnFollower(reply.Term)
 			rf.persist()
-			break
+			return
 		}
 		if reply.VoteGranted {
 			grantedCnt++
@@ -69,11 +69,13 @@ func (rf *Raft) election() {
 		if grantedCnt*2 > len(rf.peers) {
 			rf.Logf("[election] become leader")
 			rf.turnLeader()
-			go rf.heartBeat()
+			go rf.heartBeats()
 			go rf.commitLogs()
-			break
+			return
 		}
 	}
+	rf.resetElectionTimer()
+	rf.Logf("[election] resetElectionTimer\n")
 }
 
 func (rf *Raft) incrTerm() {
