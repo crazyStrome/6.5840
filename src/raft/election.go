@@ -75,7 +75,6 @@ func (rf *Raft) election() {
 		}
 	}
 	rf.resetElectionTimer()
-	rf.Logf("[election] resetElectionTimer\n")
 }
 
 func (rf *Raft) incrTerm() {

@@ -2,7 +2,6 @@ package raft
 
 import (
 	"sync/atomic"
-	"time"
 )
 
 // example RequestVote RPC arguments structure.
@@ -11,7 +10,7 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         int64 // candidate 的任期
 	CandidateID  int   // candidate 的编号
-	LastLogIndex int   // 最后一个日志的索引
+	LastLogIndex int64 // 最后一个日志的索引
 	LastLogTerm  int64 // 最后一条日志的任期
 }
 
@@ -58,7 +57,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 // compareLog 返回 0，相等；大于 0，rf 的日志更新；小于 0，target 的日志更新
-func (rf *Raft) compareLog(targetLastIdx int, targetLastTerm int64) int {
+func (rf *Raft) compareLog(targetLastIdx int64, targetLastTerm int64) int {
 	lastIdx, lastTerm := rf.getLastLogIndexAndTerm()
 	if lastIdx == targetLastIdx && lastTerm == targetLastTerm {
 		return 0
@@ -78,7 +77,7 @@ func (rf *Raft) compareLog(targetLastIdx int, targetLastTerm int64) int {
 type AppendEntriesArgs struct {
 	Term         int64   // leader 的任期
 	LeaderID     int     // leader 的编号
-	PrevLogIndex int     // 即将处理的记录的前一个索引
+	PrevLogIndex int64   // 即将处理的记录的前一个索引
 	PrevLogTerm  int64   // prevLogIndex 对应记录的任期
 	Entries      []Entry // 日志记录，为空则为心跳消息
 	LeaderCommit int64   // leader 提交的索引
@@ -86,8 +85,8 @@ type AppendEntriesArgs struct {
 
 type XData struct {
 	XTerm  int64 // 冲突条目对应的任期
-	XIndex int   // 冲突任期对应的第一个条目索引
-	XLen   int   // 日志长度
+	XIndex int64 // 冲突任期对应的第一个条目索引
+	XLen   int64 // 日志长度
 }
 
 type AppendEntriesReply struct {
@@ -116,20 +115,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	//rf.mu.Lock()
-	//rf.log = rf.log[:args.PrevLogIndex]
-	//rf.mu.Unlock()
-
-	//rf.persist()
-
-	//if len(args.Entries) == 0 {
-	//	// 表明是心跳消息
-	//	// 只有日志匹配之后，才更新 commitIndex
-	//	rf.updateCommitIndex(args.LeaderCommit)
-	//	reply.Success = true
-	//	return
-	//}
-
 	rf.mu.Lock()
 	entries := make([]Entry, 0, len(rf.log)+len(args.Entries))
 	for _, entry := range rf.log {
@@ -138,7 +123,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 	for _, entry := range args.Entries {
-		if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= entry.Index {
+		if rf.getSnapLastIncludeIndex() >= entry.Index {
 			continue
 		}
 		entries = append(entries, entry.clone())
@@ -160,19 +145,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		args.PrevLogIndex, args.PrevLogTerm, args.LeaderID, len(args.Entries))
 }
 
-func (rf *Raft) getXData(leaderIdx int) XData {
+func (rf *Raft) getXData(leaderIdx int64) XData {
 	x := XData{}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	x.XLen = len(rf.log)
-	if rf.snapshot != nil {
-		x.XLen += rf.snapshot.LastIncludedIndex
-	}
-	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex == leaderIdx {
-		x.XIndex = leaderIdx
-		x.XTerm = rf.snapshot.LastIncludedTerm
-		return x
-	}
+	x.XLen = int64(len(rf.log)) + rf.getSnapLastIncludeIndex()
 	var term int64
 	for _, entry := range rf.log {
 		if entry.Index == leaderIdx {
@@ -202,21 +179,18 @@ func (rf *Raft) updateCommitIndex(commitIndex int64) {
 	rf.Logf("[updateCommitIndex] from:%v to %v\n", curIdx, afterIdx)
 }
 
-func (rf *Raft) getLastLogIndexAndTerm() (int, int64) {
+func (rf *Raft) getLastLogIndexAndTerm() (int64, int64) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if len(rf.log) == 0 {
-		if rf.snapshot != nil {
-			return rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm
-		}
-		return 0, 0
+		return rf.getSnapLastIncludeIndex(), rf.getSnapLastIncludeTerm()
 	}
 	entry := rf.log[len(rf.log)-1]
 	return entry.Index, entry.Term
 }
 
 // matchLog 判断是否匹配
-func (rf *Raft) matchLog(prevIdx int, prevTerm int64) bool {
+func (rf *Raft) matchLog(prevIdx int64, prevTerm int64) bool {
 	if prevIdx == 0 {
 		return true
 	}
@@ -228,10 +202,7 @@ func (rf *Raft) matchLog(prevIdx int, prevTerm int64) bool {
 		}
 		return entry.Term == prevTerm
 	}
-	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= prevIdx {
-		return true
-	}
-	return false
+	return rf.getSnapLastIncludeIndex() >= prevIdx
 }
 
 func (rf *Raft) setVoteInfo(server int, term int64) {
@@ -255,9 +226,9 @@ func min(a, b int64) int64 {
 type InstallSnapshotArgs struct {
 	Term              int64  // leader 的任期
 	LeaderID          int    // leader 编号
-	LastIncludedIndex int    // 快照包含的最后一个索引
+	LastIncludedIndex int64  // 快照包含的最后一个索引
 	LastIncludedTerm  int64  // 快照包含的最后一条日志的任期
-	Offset            int    // 该块数据所在快照的位置
+	Offset            int64  // 该块数据所在快照的位置
 	Data              []byte // 数据块
 	Done              bool   // 是否是最后一块
 }
@@ -274,51 +245,46 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			args.Term, args.LeaderID)
 		return
 	}
-	now := time.Now()
 	rf.turnFollower(args.Term)
 	rf.persist()
 
-	rf.mu.Lock()
-
-	lastIncludedIndex := args.LastIncludedIndex
-	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= lastIncludedIndex {
+	if rf.getSnapLastIncludeIndex() >= args.LastIncludedIndex {
 		rf.Logf("[InstallSnapshot] already has idx:%v, bigger than:%v\n",
-			rf.snapshot.LastIncludedIndex, args.LastIncludedIndex)
-		rf.mu.Unlock()
+			rf.getSnapLastIncludeIndex(), args.LastIncludedIndex)
 		return
 	}
 
-	if args.Offset == 0 && rf.snapshotCache[lastIncludedIndex] == nil {
-		rf.snapshotCache[lastIncludedIndex] = &Snapshot{
-			LastIncludedIndex: lastIncludedIndex,
-			LastIncludedTerm:  args.LastIncludedTerm,
-		}
+	rf.mu.Lock()
+	lastIncludedIndex := args.LastIncludedIndex
+	if args.Offset == 0 {
+		rf.snapshotCache[lastIncludedIndex] = []byte{}
 		rf.Logf("[InstallSnapshot] create cache for idx:%v of leader:%v\n",
 			lastIncludedIndex, args.LeaderID)
 	}
 	cache := rf.snapshotCache[lastIncludedIndex]
-	if len(cache.Snapshot) < args.Offset+len(args.Data) {
-		buf := make([]byte, args.Offset+len(args.Data))
-		copy(buf[:len(cache.Snapshot)], cache.Snapshot)
-		copy(buf[args.Offset:args.Offset+len(args.Data)], args.Data)
-		cache.Snapshot = buf
+	if len(cache) < int(args.Offset)+len(args.Data) {
+		buf := make([]byte, int(args.Offset)+len(args.Data))
+		copy(buf[:len(cache)], cache)
+		cache = buf
 	}
+	copy(cache[args.Offset:args.Offset+int64(len(args.Data))], args.Data)
 	rf.snapshotCache[lastIncludedIndex] = cache
+	rf.mu.Unlock()
 
 	if !args.Done {
 		rf.Logf("[InstallSnapshot] wait for more data after offset:%v, leader:%v, len:%v\n",
 			args.Offset, args.LeaderID, len(args.Data))
-		rf.mu.Unlock()
 		return
 	}
+	rf.mu.Lock()
 	delete(rf.snapshotCache, lastIncludedIndex)
-
-	rf.setSnapshotWithoutLock(args.LastIncludedIndex, cache.Snapshot)
 	rf.mu.Unlock()
+
+	rf.updateEntryForSnapshot(lastIncludedIndex, args.LastIncludedTerm, cache)
 
 	rf.updateCommitIndex(int64(args.LastIncludedIndex))
 
 	rf.persist()
 
-	rf.Logf("[InstallSnapshot] done, args:%+v, cost:%v\n", args, time.Since(now))
+	rf.Logf("[InstallSnapshot] done, args:%+v\n", args)
 }

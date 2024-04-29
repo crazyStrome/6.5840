@@ -58,12 +58,8 @@ func (rf *Raft) persist() {
 	raftstate := w.Bytes()
 
 	snapshot := rf.getSnapshot()
-	var raftSnaptshot []byte
-	if snapshot != nil {
-		raftSnaptshot = snapshot.Snapshot
-	}
 
-	rf.persister.Save(raftstate, raftSnaptshot)
+	rf.persister.Save(raftstate, snapshot)
 }
 
 // restore previously persisted state.
@@ -90,7 +86,7 @@ func (rf *Raft) readSnapshot(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	rf.recoverFromSnapshot(data)
+	rf.setSnapshot(data)
 }
 
 // the service says it has created a snapshot that has
@@ -100,39 +96,39 @@ func (rf *Raft) readSnapshot(data []byte) {
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.Logf("[Snapshot] index:%v, len:%v\n", index, len(snapshot))
-	rf.mu.Lock()
+	lastEntries := rf.getEntries(int64(index), int64(index+1))
+	if len(lastEntries) == 0 {
+		// 这里不会走到
+		rf.Logf("[Snapshot] entries is zero, idx:%v\n", index)
+		return
+	}
+	lastIncludedTerm := lastEntries[0].Term
 
-	rf.setSnapshotWithoutLock(index, snapshot)
-	rf.mu.Unlock()
-
+	rf.updateEntryForSnapshot(int64(index), lastIncludedTerm, snapshot)
 	rf.persist()
 }
 
-func (rf *Raft) setSnapshotWithoutLock(index int, snapshot []byte) {
-	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= index {
-		rf.Logf("[setSnapshotWithoutLock] already has idx:%v, bigger than:%v\n",
-			rf.snapshot.LastIncludedIndex, index)
+// updateEntryForSnapshot 把 index 前的日志都干掉，并且设置 snapshot
+func (rf *Raft) updateEntryForSnapshot(index int64, term int64, snapshot []byte) {
+	if rf.getSnapLastIncludeIndex() >= index {
+		rf.Logf("[updateEntryForSnapshot] already has idx:%v, bigger than:%v\n",
+			rf.getSnapLastIncludeIndex(), index)
 		return
 	}
-	var lastIncludedTerm int64
+	rf.setSnapLastIncludeIndex(index)
+	rf.setSnapLastIncludeTerm(term)
+	rf.setSnapshot(snapshot)
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	entries := make([]Entry, 0, len(rf.log))
 	for _, entry := range rf.log {
-		if entry.Index < index {
-			continue
+		if entry.Index > index {
+			entries = append(entries, entry.clone())
 		}
-		if entry.Index == index {
-			lastIncludedTerm = entry.Term
-			continue
-		}
-		entries = append(entries, entry.clone())
 	}
 	rf.log = entries
 	rf.Logf("[setSnapshotWithoutLock] after snapshot, logs:%+v\n", entries)
-	rf.snapshot = &Snapshot{
-		LastIncludedIndex: index,
-		LastIncludedTerm:  lastIncludedTerm,
-		Snapshot:          clone(snapshot),
-	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -186,9 +182,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	curTerm := rf.getCurrentTerm()
 	rf.mu.Lock()
-	var lastIdx int
-	if rf.snapshot != nil {
-		lastIdx = rf.snapshot.LastIncludedIndex
+	var lastIdx int64
+	if rf.getSnapLastIncludeIndex() > 0 {
+		lastIdx = rf.getSnapLastIncludeIndex()
 	}
 	if len(rf.log) != 0 {
 		lastIdx = rf.log[len(rf.log)-1].Index
@@ -199,8 +195,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	})
 
-	rf.nextIndex[rf.me] = lastIdx + 2
-	rf.matchIndex[rf.me] = lastIdx + 1
+	rf.setNextIndex(rf.me, lastIdx+2)
+	rf.setMatchIndex(rf.me, lastIdx+1)
 	rf.mu.Unlock()
 
 	rf.persist()
@@ -208,7 +204,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.Logf("[Start] append log:%+v at index:%v\n", command, lastIdx+1)
 	rf.Logf("[Start] after entries:%+v", rf.cloneLog())
 
-	return lastIdx + 1, int(curTerm), true
+	return int(lastIdx + 1), int(curTerm), true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -252,8 +248,12 @@ func (rf *Raft) isElectionTimeout() bool {
 		atomic.LoadInt64(&rf.electionTimeout)
 }
 
+func init() {
+	rand.Seed(time.Now().UnixMilli())
+}
+
 func getElectionTimeout() int64 {
-	return 300 + (rand.Int63() % 300)
+	return 300 + (rand.Int63() % 400)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -271,7 +271,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.snapshotCache = map[int]*Snapshot{}
+	rf.snapshotCache = make(map[int64][]byte)
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.resetElectionTimer()

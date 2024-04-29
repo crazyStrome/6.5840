@@ -18,125 +18,125 @@ func (rf *Raft) commitLogs() {
 
 func (rf *Raft) commitLog(idx int) {
 	rf.Logf("[commitLog] start to Raft:%v\n", idx)
-	defer func() {
-		if rec := recover(); rec != nil {
-			rf.Logf("[commitLog] panic:%v\n", rec)
-		}
-	}()
 	for !rf.killed() && rf.getCurrentState() == StateLeader {
 		lastIdx, _ := rf.getLastLogIndexAndTerm()
-		rf.Logf("[commitLog] lastIndex:%v, raft:%v\n", lastIdx, idx)
-		rf.mu.Lock()
-		nextIdx := rf.nextIndex[idx]
-		rf.mu.Unlock()
+		nextIdx := rf.getNextIndex(idx)
 		if nextIdx > lastIdx {
 			// 还没有新日志，等待久一点
 			//rf.Logf("[commitLog] sleep idx:%v, lastIndex:%v, nextIndex:%v\n",
 			//	idx, lastIdx, nextIdx)
-			time.Sleep(5 * time.Millisecond)
+			//time.Sleep(10 * time.Millisecond)
 			continue
 		}
-		rf.Logf("[commitLog] start idx:%v, lastIndex:%v, nextIndex:%v\n",
-			idx, lastIdx, nextIdx)
+		//rf.Logf("[commitLog] start idx:%v, lastIndex:%v, nextIndex:%v\n",
+		//	idx, lastIdx, nextIdx)
 
 		// 如果 nextIndex 在快照里，就 InstallSnapshot
-		snapshot := rf.getSnapshot()
-		if snapshot != nil && snapshot.LastIncludedIndex >= nextIdx {
-			args := &InstallSnapshotArgs{
-				Term:              rf.getCurrentTerm(),
-				LeaderID:          rf.me,
-				LastIncludedIndex: snapshot.LastIncludedIndex,
-				LastIncludedTerm:  snapshot.LastIncludedTerm,
-				Offset:            0,
-				Data:              clone(snapshot.Snapshot),
-				Done:              true,
-			}
-			reply := &InstallSnapshotReply{}
-			now := time.Now()
-			ok := rf.peers[idx].Call("Raft.InstallSnapshot", args, reply)
-			if !ok {
-				rf.Logf("[commitLog] InstallSnapshot to Raft:%v fail, args:%+v, reply:%+v, ok:%v, cost:%v\n", idx, args, reply, ok, time.Since(now))
-				time.Sleep(20 * time.Millisecond)
-				continue
-			}
-			if reply.Term > rf.getCurrentTerm() {
-				rf.Logf("[commitLog] InstallSnapshot see high term:%v of Raft:%v\n", reply.Term, idx)
-				rf.turnFollower(reply.Term)
-				rf.persist()
-				break
-			}
-			rf.mu.Lock()
-			rf.nextIndex[idx] = args.LastIncludedIndex + 1
-			rf.matchIndex[idx] = args.LastIncludedIndex
-			rf.mu.Unlock()
-			rf.updateLeaderCommitIndex()
-			rf.Logf("[commitLog] InstallSnapshot to Raft:%v suc, idx:%v, offset:%v\n",
-				idx, args.LastIncludedIndex, args.Offset)
-			time.Sleep(5 * time.Millisecond)
-			continue
+		var ok bool
+		if rf.getSnapLastIncludeIndex() >= nextIdx {
+			ok = rf.sendSnapshot(idx)
+		} else {
+			ok = rf.sendAppendEntries(idx)
 		}
-		var prevIdx int
-		var prevTerm int64
-		prevEntries := rf.getEntries(nextIdx-1, nextIdx)
-		if len(prevEntries) != 0 {
-			prevIdx = prevEntries[0].Index
-			prevTerm = prevEntries[0].Term
-		}
-		if snapshot != nil && snapshot.LastIncludedIndex == nextIdx-1 {
-			prevIdx = nextIdx - 1
-			prevTerm = snapshot.LastIncludedTerm
-		}
-		entries := rf.getEntries(nextIdx, lastIdx+1)
-		if len(entries) == 0 {
-			rf.Logf("[commitLog] AppendEntries to:%v is zero\n", idx)
-		}
-		args := &AppendEntriesArgs{
-			Term:         rf.getCurrentTerm(),
-			LeaderID:     rf.me,
-			LeaderCommit: atomic.LoadInt64(&rf.commitIndex),
-			Entries:      entries,
-			PrevLogIndex: prevIdx,
-			PrevLogTerm:  prevTerm,
-		}
-		reply := &AppendEntriesReply{}
-		ok := rf.peers[idx].Call("Raft.AppendEntries", args, reply)
 		if !ok {
-			rf.Logf("[commitLog] AppendEntries to Raft:%v fail\n", idx)
-			time.Sleep(10 * time.Millisecond)
-			continue
+			time.Sleep(5 * time.Millisecond)
+		} else {
+			time.Sleep(1 * time.Millisecond)
 		}
-		if reply.Term > rf.getCurrentTerm() {
-			rf.Logf("[commitLog] see high term:%v of Raft:%v\n", reply.Term, idx)
-			rf.turnFollower(reply.Term)
-			rf.persist()
-			break
-		}
-		if reply.Success {
-			rf.mu.Lock()
-			rf.nextIndex[idx] += len(entries)
-			rf.matchIndex[idx] = prevIdx + len(entries)
-			rf.mu.Unlock()
-			rf.updateLeaderCommitIndex()
-			rf.Logf("[commitLog] append to Raft:%v success, idx:%v, len:%v\n",
-				idx, nextIdx, len(entries))
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-		x := reply.XData
-		nIndex := rf.getNextIndex(prevIdx, x)
-		rf.mu.Lock()
-		rf.nextIndex[idx] = nIndex
-		rf.mu.Unlock()
-		rf.Logf("[commitLog] append to Raft:%v fail, idx:%v, len:%v, xData:%+v, nextIdx:%v\n",
-			idx, nextIdx, len(entries), x, nIndex)
-		time.Sleep(5 * time.Millisecond)
 	}
 	rf.Logf("[commitLog] stop to Raft:%v\n", idx)
 }
 
-func (rf *Raft) getNextIndex(prevIdx int, x XData) int {
+func (rf *Raft) sendSnapshot(idx int) bool {
+	args := &InstallSnapshotArgs{
+		Term:              rf.getCurrentTerm(),
+		LeaderID:          rf.me,
+		LastIncludedIndex: rf.getSnapLastIncludeIndex(),
+		LastIncludedTerm:  rf.getSnapLastIncludeTerm(),
+		Offset:            0,
+		Data:              rf.getSnapshot(),
+		Done:              true,
+	}
+	reply := &InstallSnapshotReply{}
+	ok := rf.peers[idx].Call("Raft.InstallSnapshot", args, reply)
+	if !ok {
+		rf.Logf("[sendSnapshot] InstallSnapshot to Raft:%v fail, args:%+v, reply:%+v, ok:%v\n",
+			idx, args, reply, ok)
+		return false
+	}
+
+	if reply.Term > rf.getCurrentTerm() {
+		rf.Logf("[commitLog] InstallSnapshot see high term:%v of Raft:%v\n", reply.Term, idx)
+		rf.turnFollower(reply.Term)
+		rf.persist()
+		return true
+	}
+
+	rf.setNextIndex(idx, args.LastIncludedIndex+1)
+	rf.setMatchIndex(idx, args.LastIncludedIndex)
+
+	rf.updateLeaderCommitIndex()
+
+	rf.Logf("[commitLog] InstallSnapshot to Raft:%v suc, idx:%v, offset:%v, next:%+v\n",
+		idx, args.LastIncludedIndex, args.Offset, rf.nextIndex)
+	return true
+}
+
+func (rf *Raft) sendAppendEntries(idx int) bool {
+	nextIdx := rf.getNextIndex(idx)
+	lastIdx, _ := rf.getLastLogIndexAndTerm()
+
+	var prevIdx int64
+	var prevTerm int64
+	prevEntries := rf.getEntries(nextIdx-1, nextIdx)
+	if len(prevEntries) != 0 {
+		prevIdx = prevEntries[0].Index
+		prevTerm = prevEntries[0].Term
+	}
+	if rf.getSnapLastIncludeIndex() == nextIdx-1 {
+		prevIdx = nextIdx - 1
+		prevTerm = rf.getSnapLastIncludeTerm()
+	}
+	entries := rf.getEntries(nextIdx, lastIdx+1)
+	args := &AppendEntriesArgs{
+		Term:         rf.getCurrentTerm(),
+		LeaderID:     rf.me,
+		LeaderCommit: atomic.LoadInt64(&rf.commitIndex),
+		Entries:      entries,
+		PrevLogIndex: prevIdx,
+		PrevLogTerm:  prevTerm,
+	}
+	reply := &AppendEntriesReply{}
+	ok := rf.peers[idx].Call("Raft.AppendEntries", args, reply)
+	if !ok {
+		rf.Logf("[commitLog] AppendEntries to Raft:%v fail, args:%+v\n", idx, args)
+		return false
+	}
+	if reply.Term > rf.getCurrentTerm() {
+		rf.Logf("[commitLog] see high term:%v of Raft:%v\n", reply.Term, idx)
+		rf.turnFollower(reply.Term)
+		rf.persist()
+		return true
+	}
+	if reply.Success {
+		rf.setNextIndex(idx, nextIdx+int64(len(entries)))
+		rf.setMatchIndex(idx, prevIdx+int64(len(entries)))
+		rf.updateLeaderCommitIndex()
+		rf.Logf("[commitLog] append to Raft:%v success, idx:%v, len:%v\n",
+			idx, nextIdx, len(entries))
+		return true
+	}
+	x := reply.XData
+	nIndex := rf.getXNextIndex(prevIdx, x)
+	rf.setNextIndex(idx, nIndex)
+	rf.Logf("[commitLog] append to Raft:%v fail, idx:%v, len:%v, xData:%+v, nextIdx:%v\n",
+		idx, nextIdx, len(entries), x, nIndex)
+	return true
+}
+
+func (rf *Raft) getXNextIndex(prevIdx int64, x XData) int64 {
 	xTermEntries := rf.getEntriesForTerm(x.XTerm)
-	var nIndex int
+	var nIndex int64
 	if len(xTermEntries) == 0 {
 		nIndex = x.XIndex
 	} else {
@@ -171,24 +171,23 @@ func (rf *Raft) applyLog() {
 		if lastApplied < commitIndex {
 			rf.Logf("[applyLog] current logs:%+v\n", rf.cloneLog())
 			// 如果 lastApplied + 1 在快照里，就用应用快照
-			snapshot := rf.getSnapshot()
-			if snapshot != nil && snapshot.LastIncludedIndex > int(lastApplied) {
+			if rf.getSnapLastIncludeIndex() > lastApplied {
 				rf.applyCh <- ApplyMsg{
 					SnapshotValid: true,
-					Snapshot:      clone(snapshot.Snapshot),
-					SnapshotTerm:  int(snapshot.LastIncludedTerm),
-					SnapshotIndex: snapshot.LastIncludedIndex,
+					Snapshot:      rf.getSnapshot(),
+					SnapshotTerm:  int(rf.getSnapLastIncludeTerm()),
+					SnapshotIndex: int(rf.getSnapLastIncludeIndex()),
 				}
-				atomic.StoreInt64(&rf.lastApplied, int64(snapshot.LastIncludedIndex))
-				rf.Logf("[applyLog] apply snapshot idx:%v\n", snapshot.LastIncludedIndex)
+				atomic.StoreInt64(&rf.lastApplied, rf.getSnapLastIncludeIndex())
+				rf.Logf("[applyLog] apply snapshot idx:%v\n", rf.getSnapLastIncludeIndex())
 				continue
 			}
-			entries := rf.getEntries(int(lastApplied+1), int(commitIndex+1))
+			entries := rf.getEntries(lastApplied+1, commitIndex+1)
 			for _, entry := range entries {
 				rf.applyCh <- ApplyMsg{
 					CommandValid: true,
 					Command:      entry.Command,
-					CommandIndex: entry.Index,
+					CommandIndex: int(entry.Index),
 				}
 			}
 			atomic.AddInt64(&rf.lastApplied, int64(len(entries)))
@@ -200,7 +199,7 @@ func (rf *Raft) applyLog() {
 }
 
 // getEntries 返回 [start: end) 索引的数据，索引是条目索引，从 1 开始
-func (rf *Raft) getEntries(start, end int) []Entry {
+func (rf *Raft) getEntries(start, end int64) []Entry {
 	if start <= 0 {
 		return nil
 	}
@@ -224,8 +223,8 @@ func (rf *Raft) updateLeaderCommitIndex() {
 		return
 	}
 	matchIndexs := make([]int64, 0, len(rf.peers))
-	for _, idx := range rf.matchIndex {
-		matchIndexs = append(matchIndexs, int64(idx))
+	for i := 0; i < len(rf.peers); i++ {
+		matchIndexs = append(matchIndexs, rf.getMatchIndex(i))
 	}
 	commitIndex := getMaxMajority(matchIndexs)
 	rf.Logf("[updateLeaderCommitIndex] from:%v to:%v, matchIndex:%+v\n",

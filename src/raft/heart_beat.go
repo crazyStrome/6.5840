@@ -53,10 +53,8 @@ func (rf *Raft) sendHeartBeat(idx int) {
 		return
 	}
 	x := rsp.XData
-	nIndex := rf.getNextIndex(prevIdx, x)
-	rf.mu.Lock()
-	rf.nextIndex[idx] = nIndex
-	rf.mu.Unlock()
-	rf.Logf("[sendHeartBeat] to Raft:%v log diff, idx:%v, xData:%+v, nextIndex:%v, all:%+v\n",
-		idx, prevIdx, x, nIndex, rf.nextIndex)
+	nIndex := rf.getXNextIndex(prevIdx, x)
+	rf.setNextIndex(idx, nIndex)
+	//rf.Logf("[sendHeartBeat] to Raft:%v log diff, idx:%v, xData:%+v, nextIndex:%v, all:%+v\n",
+	//	idx, prevIdx, x, nIndex, rf.nextIndex)
 }
