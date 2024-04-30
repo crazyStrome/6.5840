@@ -254,33 +254,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 
-	rf.mu.Lock()
-	lastIncludedIndex := args.LastIncludedIndex
-	if args.Offset == 0 {
-		rf.snapshotCache[lastIncludedIndex] = []byte{}
-		rf.Logf("[InstallSnapshot] create cache for idx:%v of leader:%v\n",
-			lastIncludedIndex, args.LeaderID)
-	}
-	cache := rf.snapshotCache[lastIncludedIndex]
-	if len(cache) < int(args.Offset)+len(args.Data) {
-		buf := make([]byte, int(args.Offset)+len(args.Data))
-		copy(buf[:len(cache)], cache)
-		cache = buf
-	}
-	copy(cache[args.Offset:args.Offset+int64(len(args.Data))], args.Data)
-	rf.snapshotCache[lastIncludedIndex] = cache
-	rf.mu.Unlock()
-
-	if !args.Done {
-		rf.Logf("[InstallSnapshot] wait for more data after offset:%v, leader:%v, len:%v\n",
-			args.Offset, args.LeaderID, len(args.Data))
-		return
-	}
-	rf.mu.Lock()
-	delete(rf.snapshotCache, lastIncludedIndex)
-	rf.mu.Unlock()
-
-	rf.updateEntryForSnapshot(lastIncludedIndex, args.LastIncludedTerm, cache)
+	rf.updateEntryForSnapshot(args.LastIncludedIndex,
+		args.LastIncludedTerm, args.Data)
 
 	rf.updateCommitIndex(int64(args.LastIncludedIndex))
 

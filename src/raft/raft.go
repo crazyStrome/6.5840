@@ -271,7 +271,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.snapshotCache = make(map[int64][]byte)
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.resetElectionTimer()

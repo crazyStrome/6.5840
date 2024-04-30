@@ -74,10 +74,9 @@ type Raft struct {
 	}
 	log []Entry // 日志条目
 
-	snapshot             []byte           // 快照
-	snapLastIncludeIndex int64            // 快照包含的最后一条日志索引
-	snapLastIncludeTerm  int64            // 快照包含的最后一条日志的任期
-	snapshotCache        map[int64][]byte // cache
+	snapshot             []byte // 快照
+	snapLastIncludeIndex int64  // 快照包含的最后一条日志索引
+	snapLastIncludeTerm  int64  // 快照包含的最后一条日志的任期
 
 	// volatile state on all servers
 	commitIndex int64 // 已知被提交的最高条目索引
