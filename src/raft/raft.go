@@ -56,7 +56,10 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.getPersistState())
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+
+	snapshot := rf.getSnapshot()
+
+	rf.persister.Save(raftstate, snapshot)
 }
 
 // restore previously persisted state.
@@ -76,13 +79,56 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
+// restore previously persisted state.
+func (rf *Raft) readSnapshot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	// Your code here (2C).
+	// Example:
+	rf.setSnapshot(data)
+}
+
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+	rf.Logf("[Snapshot] index:%v, len:%v\n", index, len(snapshot))
+	lastEntries := rf.getEntries(int64(index), int64(index+1))
+	if len(lastEntries) == 0 {
+		// 这里不会走到
+		rf.Logf("[Snapshot] entries is zero, idx:%v\n", index)
+		return
+	}
+	lastIncludedTerm := lastEntries[0].Term
 
+	rf.updateEntryForSnapshot(int64(index), lastIncludedTerm, snapshot)
+	rf.persist()
+}
+
+// updateEntryForSnapshot 把 index 前的日志都干掉，并且设置 snapshot
+func (rf *Raft) updateEntryForSnapshot(index int64, term int64, snapshot []byte) {
+	if rf.getSnapLastIncludeIndex() >= index {
+		rf.Logf("[updateEntryForSnapshot] already has idx:%v, bigger than:%v\n",
+			rf.getSnapLastIncludeIndex(), index)
+		return
+	}
+	rf.setSnapLastIncludeIndex(index)
+	rf.setSnapLastIncludeTerm(term)
+	rf.setSnapshot(snapshot)
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	entries := make([]Entry, 0, len(rf.log))
+	for _, entry := range rf.log {
+		if entry.Index > index {
+			entries = append(entries, entry.clone())
+		}
+	}
+	rf.log = entries
+	rf.Logf("[setSnapshotWithoutLock] after snapshot, logs:%+v\n", entries)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -136,22 +182,29 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	curTerm := rf.getCurrentTerm()
 	rf.mu.Lock()
-	lastIdx := len(rf.log)
+	var lastIdx int64
+	if rf.getSnapLastIncludeIndex() > 0 {
+		lastIdx = rf.getSnapLastIncludeIndex()
+	}
+	if len(rf.log) != 0 {
+		lastIdx = rf.log[len(rf.log)-1].Index
+	}
 	rf.log = append(rf.log, Entry{
 		Index:   lastIdx + 1,
 		Term:    curTerm,
 		Command: command,
 	})
-	rf.mu.Unlock()
-	rf.persist()
-	rf.Logf("[Start] entries:%+v", rf.cloneLog())
 
-	rf.nextIndex[rf.me] = lastIdx + 2
-	rf.matchIndex[rf.me] = lastIdx + 1
+	rf.setNextIndex(rf.me, lastIdx+2)
+	rf.setMatchIndex(rf.me, lastIdx+1)
+	rf.mu.Unlock()
+
+	rf.persist()
 
 	rf.Logf("[Start] append log:%+v at index:%v\n", command, lastIdx+1)
+	rf.Logf("[Start] after entries:%+v", rf.cloneLog())
 
-	return lastIdx + 1, int(curTerm), true
+	return int(lastIdx + 1), int(curTerm), true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -195,8 +248,12 @@ func (rf *Raft) isElectionTimeout() bool {
 		atomic.LoadInt64(&rf.electionTimeout)
 }
 
+func init() {
+	rand.Seed(time.Now().UnixMilli())
+}
+
 func getElectionTimeout() int64 {
-	return 1200 + (rand.Int63() % 300)
+	return 300 + (rand.Int63() % 400)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -221,6 +278,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.readSnapshot(persister.ReadSnapshot())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()

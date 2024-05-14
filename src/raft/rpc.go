@@ -1,6 +1,8 @@
 package raft
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+)
 
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -8,7 +10,7 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         int64 // candidate 的任期
 	CandidateID  int   // candidate 的编号
-	LastLogIndex int   // 最后一个日志的索引
+	LastLogIndex int64 // 最后一个日志的索引
 	LastLogTerm  int64 // 最后一条日志的任期
 }
 
@@ -55,7 +57,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 // compareLog 返回 0，相等；大于 0，rf 的日志更新；小于 0，target 的日志更新
-func (rf *Raft) compareLog(targetLastIdx int, targetLastTerm int64) int {
+func (rf *Raft) compareLog(targetLastIdx int64, targetLastTerm int64) int {
 	lastIdx, lastTerm := rf.getLastLogIndexAndTerm()
 	if lastIdx == targetLastIdx && lastTerm == targetLastTerm {
 		return 0
@@ -75,7 +77,7 @@ func (rf *Raft) compareLog(targetLastIdx int, targetLastTerm int64) int {
 type AppendEntriesArgs struct {
 	Term         int64   // leader 的任期
 	LeaderID     int     // leader 的编号
-	PrevLogIndex int     // 即将处理的记录的前一个索引
+	PrevLogIndex int64   // 即将处理的记录的前一个索引
 	PrevLogTerm  int64   // prevLogIndex 对应记录的任期
 	Entries      []Entry // 日志记录，为空则为心跳消息
 	LeaderCommit int64   // leader 提交的索引
@@ -83,8 +85,8 @@ type AppendEntriesArgs struct {
 
 type XData struct {
 	XTerm  int64 // 冲突条目对应的任期
-	XIndex int   // 冲突任期对应的第一个条目索引
-	XLen   int   // 日志长度
+	XIndex int64 // 冲突任期对应的第一个条目索引
+	XLen   int64 // 日志长度
 }
 
 type AppendEntriesReply struct {
@@ -108,55 +110,60 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if !rf.matchLog(args.PrevLogIndex, args.PrevLogTerm) {
 		reply.XData = rf.getXData(args.PrevLogIndex)
-		rf.Logf("[AppendEntries] log don't match with leader:%v, args.PrevLogIndex:%v, args.PrevLogIndex:%v, is heartBeat:%v, XData:%+v\n",
-			args.LeaderID, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries) == 0, reply.XData)
+		//rf.Logf("[AppendEntries] log don't match with leader:%v, args.PrevLogIndex:%v, args.PrevLogIndex:%v, is heartBeat:%v, XData:%+v\n",
+		//	args.LeaderID, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries) == 0, reply.XData)
 		return
 	}
 
-	//rf.mu.Lock()
-	//rf.log = rf.log[:args.PrevLogIndex]
-	//rf.mu.Unlock()
-
-	//rf.persist()
-
-	//if len(args.Entries) == 0 {
-	//	// 表明是心跳消息
-	//	// 只有日志匹配之后，才更新 commitIndex
-	//	rf.updateCommitIndex(args.LeaderCommit)
-	//	reply.Success = true
-	//	return
-	//}
-
 	rf.mu.Lock()
-	rf.log = rf.log[:args.PrevLogIndex]
-	rf.log = append(rf.log, args.Entries...)
+	entries := make([]Entry, 0, len(rf.log)+len(args.Entries))
+	for _, entry := range rf.log {
+		if entry.Index <= args.PrevLogIndex {
+			entries = append(entries, entry.clone())
+		}
+	}
+	for _, entry := range args.Entries {
+		if rf.getSnapLastIncludeIndex() >= entry.Index {
+			continue
+		}
+		entries = append(entries, entry.clone())
+	}
+	rf.log = entries
 	rf.mu.Unlock()
-	rf.Logf("[AppendEntries] entries:%+v", rf.cloneLog())
 
 	rf.persist()
 
 	reply.Success = true
 	// 只有日志匹配之后，才更新 commitIndex
 	rf.updateCommitIndex(args.LeaderCommit)
+
+	if len(args.Entries) == 0 {
+		return
+	}
+	rf.Logf("[AppendEntries] after entries:%+v", rf.cloneLog())
 	rf.Logf("[AppendEntries] add entry to log at args.PrevLogIndex:%v, args.PrevLogTerm:%v, leader:%v, entry len:%v\n",
 		args.PrevLogIndex, args.PrevLogTerm, args.LeaderID, len(args.Entries))
 }
 
-func (rf *Raft) getXData(leaderIdx int) XData {
+func (rf *Raft) getXData(leaderIdx int64) XData {
 	x := XData{}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	x.XLen = len(rf.log)
-	if leaderIdx > len(rf.log) {
-		return x
-	}
-	term := rf.log[leaderIdx-1].Term
-	x.XTerm = term
-	for i := leaderIdx - 1; i >= 0; i-- {
-		if rf.log[i].Term != term {
+	x.XLen = int64(len(rf.log)) + rf.getSnapLastIncludeIndex()
+	var term int64
+	for _, entry := range rf.log {
+		if entry.Index == leaderIdx {
+			term = entry.Term
 			break
 		}
-		x.XIndex = rf.log[i].Index
+	}
+	x.XTerm = term
+
+	for _, entry := range rf.log {
+		if entry.Term == term {
+			x.XIndex = entry.Index
+			break
+		}
 	}
 	return x
 }
@@ -172,27 +179,30 @@ func (rf *Raft) updateCommitIndex(commitIndex int64) {
 	rf.Logf("[updateCommitIndex] from:%v to %v\n", curIdx, afterIdx)
 }
 
-func (rf *Raft) getLastLogIndexAndTerm() (int, int64) {
+func (rf *Raft) getLastLogIndexAndTerm() (int64, int64) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if len(rf.log) == 0 {
-		return 0, 0
+		return rf.getSnapLastIncludeIndex(), rf.getSnapLastIncludeTerm()
 	}
 	entry := rf.log[len(rf.log)-1]
 	return entry.Index, entry.Term
 }
 
 // matchLog 判断是否匹配
-func (rf *Raft) matchLog(prevIdx int, prevTerm int64) bool {
+func (rf *Raft) matchLog(prevIdx int64, prevTerm int64) bool {
 	if prevIdx == 0 {
 		return true
 	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if prevIdx > len(rf.log) {
-		return false
+	for _, entry := range rf.log {
+		if entry.Index != prevIdx {
+			continue
+		}
+		return entry.Term == prevTerm
 	}
-	return rf.log[prevIdx-1].Term == prevTerm
+	return rf.getSnapLastIncludeIndex() >= prevIdx
 }
 
 func (rf *Raft) setVoteInfo(server int, term int64) {
@@ -211,4 +221,45 @@ func min(a, b int64) int64 {
 		return b
 	}
 	return a
+}
+
+type InstallSnapshotArgs struct {
+	Term              int64  // leader 的任期
+	LeaderID          int    // leader 编号
+	LastIncludedIndex int64  // 快照包含的最后一个索引
+	LastIncludedTerm  int64  // 快照包含的最后一条日志的任期
+	Offset            int64  // 该块数据所在快照的位置
+	Data              []byte // 数据块
+	Done              bool   // 是否是最后一块
+}
+
+type InstallSnapshotReply struct {
+	Term int64 // 当前任期，leader 需要用这个来判断
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	curTerm := rf.getCurrentTerm()
+	reply.Term = curTerm
+	if curTerm > args.Term {
+		rf.Logf("[InstallSnapshot] see low term:%v of leader:%v\n",
+			args.Term, args.LeaderID)
+		return
+	}
+	rf.turnFollower(args.Term)
+	rf.persist()
+
+	if rf.getSnapLastIncludeIndex() >= args.LastIncludedIndex {
+		rf.Logf("[InstallSnapshot] already has idx:%v, bigger than:%v\n",
+			rf.getSnapLastIncludeIndex(), args.LastIncludedIndex)
+		return
+	}
+
+	rf.updateEntryForSnapshot(args.LastIncludedIndex,
+		args.LastIncludedTerm, args.Data)
+
+	rf.updateCommitIndex(int64(args.LastIncludedIndex))
+
+	rf.persist()
+
+	rf.Logf("[InstallSnapshot] done, args:%+v\n", args)
 }

@@ -30,7 +30,7 @@ type ApplyMsg struct {
 }
 
 type Entry struct {
-	Index   int
+	Index   int64
 	Term    int64
 	Command interface{}
 }
@@ -49,7 +49,9 @@ type PersistState struct {
 		VotedFor  int64
 		VotedTerm int64
 	}
-	Log []Entry
+	Log                   []Entry
+	SnapLastIncludedTerm  int64
+	SnapLastIncludedIndex int64
 }
 
 // A Go object implementing a single Raft peer.
@@ -72,6 +74,10 @@ type Raft struct {
 	}
 	log []Entry // 日志条目
 
+	snapshot             []byte // 快照
+	snapLastIncludeIndex int64  // 快照包含的最后一条日志索引
+	snapLastIncludeTerm  int64  // 快照包含的最后一条日志的任期
+
 	// volatile state on all servers
 	commitIndex int64 // 已知被提交的最高条目索引
 	lastApplied int64 // 已经应用到状态机上的最高的条目索引
@@ -84,9 +90,42 @@ type Raft struct {
 	leaderID int // -1 表示没有 leaderID
 
 	// volatile state on leaders
-	nextIndex  []int         // 每个 server 一个 index，标识要发给他们的下一个条目的索引。一开始是 leader 的最后一个日志条目索引 + 1
-	matchIndex []int         // 每个 server 一个，已复制到 server 上的最高索引，初始时是 0
-	applyCh    chan ApplyMsg // 应用日志的 channel
+	nextIndex  []int64 // 每个 server 一个 index，标识要发给他们的下一个条目的索引。一开始是 leader 的最后一个日志条目索引 + 1
+	matchIndex []int64 // 每个 server 一个，已复制到 server 上的最高索引，初始时是 0
+
+	applyCh chan ApplyMsg // 应用日志的 channel
+}
+
+func (rf *Raft) getSnapLastIncludeIndex() int64 {
+	return atomic.LoadInt64(&rf.snapLastIncludeIndex)
+}
+
+func (rf *Raft) getSnapLastIncludeTerm() int64 {
+	return atomic.LoadInt64(&rf.snapLastIncludeTerm)
+}
+
+func (rf *Raft) setSnapLastIncludeIndex(idx int64) {
+	atomic.StoreInt64(&rf.snapLastIncludeIndex, idx)
+}
+
+func (rf *Raft) setSnapLastIncludeTerm(term int64) {
+	atomic.StoreInt64(&rf.snapLastIncludeTerm, term)
+}
+
+func (rf *Raft) getNextIndex(idx int) int64 {
+	return atomic.LoadInt64(&rf.nextIndex[idx])
+}
+
+func (rf *Raft) getMatchIndex(idx int) int64 {
+	return atomic.LoadInt64(&rf.matchIndex[idx])
+}
+
+func (rf *Raft) setNextIndex(idx int, next int64) {
+	atomic.StoreInt64(&rf.nextIndex[idx], next)
+}
+
+func (rf *Raft) setMatchIndex(idx int, match int64) {
+	atomic.StoreInt64(&rf.matchIndex[idx], match)
 }
 
 func (rf *Raft) Logf(line string, args ...interface{}) {
@@ -134,13 +173,14 @@ func (rf *Raft) turnLeader() {
 		return
 	}
 	atomic.StoreInt32(&rf.currentState, StateLeader)
+
 	// 初始化 nextIndex 和 matchIndex
 	lastIdx, _ := rf.getLastLogIndexAndTerm()
-	rf.nextIndex = make([]int, len(rf.peers))
+	rf.nextIndex = make([]int64, len(rf.peers))
 	for i := 0; i < len(rf.peers); i++ {
 		rf.nextIndex[i] = lastIdx + 1
 	}
-	rf.matchIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int64, len(rf.peers))
 }
 
 func (rf *Raft) resetElectionTimer() {
